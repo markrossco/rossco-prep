@@ -53,7 +53,7 @@ export default async function JobsPage({
       <div className="shell">
         <h1>Jobs</h1>
         <p className="lead">
-          <Link href="/">Home</Link>
+          List view · <Link href="/calendar">Calendar view</Link>
           {isOffice(profile.role) && (
             <>
               {' '}· <Link href="/jobs/new">New job</Link>
