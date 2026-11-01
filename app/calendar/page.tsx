@@ -88,7 +88,7 @@ export default async function CalendarPage({
       <div className="shell">
         <h1>Calendar</h1>
         <p className="lead">
-          <Link href="/jobs">List view</Link> · Calendar view
+          <Link href="/jobs">List view</Link> · Calendar view · <Link href="/clash">Clash view</Link>
         </p>
 
         <div className="cal-head">

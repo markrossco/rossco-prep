@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
-  Home, Briefcase, Package, AlertTriangle, ClipboardCheck, Truck, Camera, Layers, Shield, Activity, CalendarDays, CalendarRange,
+  Home, Briefcase, Package, AlertTriangle, ClipboardCheck, Truck, Camera, Layers, Shield, Activity, CalendarDays, CalendarRange, Rows3,
   type LucideIcon,
 } from 'lucide-react'
 import { signOut } from '@/app/actions'
@@ -16,6 +16,7 @@ const JOBS: Item = { label: 'Jobs', href: '/jobs', icon: Briefcase }
 const EQUIP: Item = { label: 'Equipment', href: '/equipment', icon: Package }
 const ISSUES: Item = { label: 'Issues', href: '/issues', icon: AlertTriangle }
 const CAL: Item = { label: 'Calendar', href: '/calendar', icon: CalendarRange }
+const CLASH: Item = { label: 'Clash view', href: '/clash', icon: Rows3 }
 const TODAY: Item = { label: 'Today', href: '/warehouse', icon: CalendarDays }
 const CHECKIN: Item = { label: 'Check-in', href: '/checkin', icon: ClipboardCheck }
 const RECEIVE: Item = { label: 'Sub-hires', href: '/receive', icon: Truck }
@@ -27,8 +28,8 @@ const ADMIN: Item = { label: 'Admin', href: '/admin', icon: Shield }
 function menus(role: string): { side: Item[]; tabs: Item[] } {
   const office = role === 'admin' || role === 'office_lead' || role === 'office'
   const leads = role === 'admin' || role === 'office_lead'
-  const side: Item[] = [HOME, TODAY, JOBS, CAL, EQUIP, ISSUES, CHECKIN, RECEIVE, REPORT, ACTIVITY]
-  if (leads) side.splice(6, 0, KITS)
+  const side: Item[] = [HOME, TODAY, JOBS, CAL, CLASH, EQUIP, ISSUES, CHECKIN, RECEIVE, REPORT, ACTIVITY]
+  if (leads) side.splice(7, 0, KITS)
   if (role === 'admin') side.push(ADMIN)
   const tabs = office ? [HOME, JOBS, CAL, EQUIP, ISSUES] : [HOME, TODAY, CAL, CHECKIN, EQUIP]
   return { side, tabs }

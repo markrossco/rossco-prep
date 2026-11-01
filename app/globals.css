@@ -287,3 +287,14 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .cal-bar { padding: 0; margin: 2px 1px; }
   .cal-bar span { display: none; }
 }
+
+/* Clash view */
+.clash table { min-width: 100%; font-size: 14px; }
+.clash th.num, .clash td.num { text-align: center; min-width: 54px; padding: 10px 6px; }
+.clash-name { position: sticky; left: 0; background: var(--surface); min-width: 170px; z-index: 1; font-weight: 700; }
+.clash-sel .clash-name, .clash-sel td { background: var(--accent-soft); }
+.clash-today { color: var(--accent); }
+.cl-ok { color: var(--ok); font-weight: 700; }
+.cl-zero { color: var(--warn); background: var(--warn-soft); font-weight: 800; }
+.cl-neg { color: var(--danger); background: var(--danger-soft); font-weight: 800; }
+.cl-turn { margin-left: 3px; vertical-align: -1px; opacity: .7; }
