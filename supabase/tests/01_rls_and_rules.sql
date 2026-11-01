@@ -400,6 +400,119 @@ select t.logout();
 
 select t.fails('even the owner cannot edit line events', $q$update public.line_events set qty=5$q$, '%insert-only%');
 select t.logout();
+
+-- ---------------------------------------------------------------------------
+-- 9. Phase 2: equipment names, issues, assets, kit contents, register views
+-- ---------------------------------------------------------------------------
+-- fixtures as the owner (imports run like this)
+insert into public.equipment_types (name, kind) values ('  Spare   Speaker ', 'stock'), ('Speaker Stand', 'stock'), ('Big Package', 'kit');
+select t.eq  ('names are tidied on the way in', $q$select count(*)::text from public.equipment_types where name = 'Spare Speaker'$q$, '1');
+insert into public.stock_adjustments (type_id, delta, reason) select id, 2, 'import' from public.equipment_types where name='Spare Speaker';
+insert into public.stock_adjustments (type_id, delta, reason) select id, 5, 'import' from public.equipment_types where name='Speaker Stand';
+insert into public.asset_register (type_id, asset_no) select id, 'A-100' from public.equipment_types where name='Spare Speaker';
+insert into public.asset_register (type_id, asset_no) select id, 'A-101' from public.equipment_types where name='Spare Speaker';
+select t.fails('names that differ only by case are refused',
+  $q$insert into public.equipment_types (name) values ('spare speaker')$q$, '%equipment_types_name_ci%');
+select t.fails('an asset on a kit title is refused',
+  $q$insert into public.asset_register (type_id, asset_no) select id, 'K-1' from public.equipment_types where name='Big Package'$q$, '%stock items%');
+
+select t.login('ross@x.test');
+select t.fails('item type cannot change once used on a job',
+  $q$update public.equipment_types set kind='consumable' where name='Desk'$q$, '%used on jobs%');
+select t.ok  ('item type can change while unused',
+  $q$update public.equipment_types set kind='consumable' where name='Speaker Stand'$q$);
+select t.ok  ('and back again',
+  $q$update public.equipment_types set kind='stock' where name='Speaker Stand'$q$);
+select t.ok  ('office switches an item off', $q$update public.equipment_types set active=false where name='Spare Speaker'$q$);
+select t.fails('switched-off item cannot go on a job',
+  $q$insert into public.job_lines (job_id, type_id, qty_required) select j.id, t.id, 1 from public.jobs j, public.equipment_types t where j.ref='ROS-N' and t.name='Spare Speaker'$q$, '%switched off%');
+select t.ok  ('office switches it back on', $q$update public.equipment_types set active=true where name='Spare Speaker'$q$);
+select t.ok  ('active item goes on a job',
+  $q$insert into public.job_lines (job_id, type_id, qty_required) select j.id, t.id, 1 from public.jobs j, public.equipment_types t where j.ref='ROS-N' and t.name='Spare Speaker'$q$);
+select t.logout();
+update public.equipment_types set archived_at = now() where name='Speaker Stand';
+select t.login('ross@x.test');
+select t.fails('archived item cannot go on a job',
+  $q$insert into public.job_lines (job_id, type_id, qty_required) select j.id, t.id, 1 from public.jobs j, public.equipment_types t where j.ref='ROS-N' and t.name='Speaker Stand'$q$, '%archived%');
+select t.logout();
+update public.equipment_types set archived_at = null where name='Speaker Stand';
+
+-- issues
+select t.login('lily@x.test');
+select t.fails('no issue on a consumable',
+  $q$insert into public.stock_issues (type_id, qty, issue, reported_by) select id, 1, 'damaged', auth.uid() from public.equipment_types where name='Gaffer tape'$q$, '%only be reported on stock%');
+select t.fails('no issue on a kit title',
+  $q$insert into public.stock_issues (type_id, qty, issue, reported_by) select id, 1, 'missing', auth.uid() from public.equipment_types where name='Mic Package'$q$, '%only be reported on stock%');
+select t.fails('cannot report more than owned',
+  $q$insert into public.stock_issues (type_id, qty, issue, reported_by) select id, 3, 'damaged', auth.uid() from public.equipment_types where name='Spare Speaker'$q$, '%more than is owned%');
+select t.fails('asset must belong to the item',
+  $q$insert into public.stock_issues (type_id, asset_id, qty, issue, reported_by)
+     select t.id, a.id, 1, 'damaged', auth.uid() from public.equipment_types t, public.asset_register a where t.name='Speaker Stand' and a.asset_no='A-100'$q$, '%different item%');
+select t.fails('an asset is reported one at a time',
+  $q$insert into public.stock_issues (type_id, asset_id, qty, issue, reported_by)
+     select t.id, a.id, 2, 'damaged', auth.uid() from public.equipment_types t, public.asset_register a where t.name='Spare Speaker' and a.asset_no='A-100'$q$, '%one at a time%');
+select t.ok  ('warehouse reports a damaged asset',
+  $q$insert into public.stock_issues (type_id, asset_id, qty, issue, note, reported_by)
+     select t.id, a.id, 1, 'damaged', 'cracked cone', auth.uid() from public.equipment_types t, public.asset_register a where t.name='Spare Speaker' and a.asset_no='A-100'$q$);
+select t.eq  ('the asset status follows the issue',
+  $q$select status from public.asset_register where asset_no='A-100'$q$, 'damaged');
+select t.fails('the same asset cannot be reported twice',
+  $q$insert into public.stock_issues (type_id, asset_id, qty, issue, reported_by)
+     select t.id, a.id, 1, 'missing', auth.uid() from public.equipment_types t, public.asset_register a where t.name='Spare Speaker' and a.asset_no='A-100'$q$, '%already has an open issue%');
+select t.logout();
+
+select t.login('jonny@x.test');
+select t.fails('cannot hand-edit an asset back to in service while an issue is open',
+  $q$update public.asset_register set status='in_service' where asset_no='A-100'$q$, '%open issue%');
+select t.fails('cannot hand-edit an asset to damaged',
+  $q$update public.asset_register set status='damaged' where asset_no='A-101'$q$, '%Report an issue%');
+select t.fails('cannot add an asset already damaged',
+  $q$insert into public.asset_register (type_id, asset_no, status) select id, 'A-102', 'damaged' from public.equipment_types where name='Spare Speaker'$q$, '%Report the issue%');
+select t.ok  ('warehouse lead adds an asset', $q$insert into public.asset_register (type_id, asset_no, serial_no) select id, ' A-102 ', 'SN1' from public.equipment_types where name='Spare Speaker'$q$);
+select t.eq  ('asset number is tidied', $q$select count(*)::text from public.asset_register where asset_no='A-102'$q$, '1');
+select t.ok  ('warehouse lead resolves the issue as repaired',
+  $q$update public.stock_issues set status='resolved', resolution='repaired', resolved_at=now() where status='open' and asset_id=(select id from public.asset_register where asset_no='A-100')$q$);
+select t.eq  ('the asset is back in service', $q$select status from public.asset_register where asset_no='A-100'$q$, 'in_service');
+select t.ok  ('warehouse lead retires an asset by hand', $q$update public.asset_register set status='retired' where asset_no='A-102'$q$);
+select t.logout();
+
+-- kit contents
+select t.login('john@x.test');
+select t.fails('a kit cannot contain a kit',
+  $q$insert into public.type_accessories (parent_type_id, child_type_id) select p.id, c.id from public.equipment_types p, public.equipment_types c where p.name='Big Package' and c.name='Mic Package'$q$, '%another kit%');
+select t.fails('a consumable cannot have contents',
+  $q$insert into public.type_accessories (parent_type_id, child_type_id) select p.id, c.id from public.equipment_types p, public.equipment_types c where p.name='Gaffer tape' and c.name='Mic'$q$, '%consumable%');
+select t.ok  ('speaker contains stand',
+  $q$insert into public.type_accessories (parent_type_id, child_type_id, inclusion) select p.id, c.id, 'default' from public.equipment_types p, public.equipment_types c where p.name='Spare Speaker' and c.name='Speaker Stand'$q$);
+select t.fails('stand cannot contain the speaker',
+  $q$insert into public.type_accessories (parent_type_id, child_type_id) select p.id, c.id from public.equipment_types p, public.equipment_types c where p.name='Speaker Stand' and c.name='Spare Speaker'$q$, '%contain itself%');
+select t.ok  ('stand contains mic',
+  $q$insert into public.type_accessories (parent_type_id, child_type_id) select p.id, c.id from public.equipment_types p, public.equipment_types c where p.name='Speaker Stand' and c.name='Mic'$q$);
+select t.fails('a loop through three items is refused',
+  $q$insert into public.type_accessories (parent_type_id, child_type_id) select p.id, c.id from public.equipment_types p, public.equipment_types c where p.name='Mic' and c.name='Spare Speaker'$q$, '%contain itself%');
+select t.logout();
+select t.login('mark@x.test');
+select t.fails('an item inside other items cannot become a kit',
+  $q$update public.equipment_types set kind='kit' where name='Speaker Stand'$q$, '%part of other kits%');
+select t.logout();
+
+-- register and issue views
+insert into public.jobs (ref, name, out_date, return_date, status)
+  values ('ROS-T', 'Today job', current_date, current_date + 1, 'confirmed');
+insert into public.job_lines (job_id, type_id, qty_required)
+  select j.id, t.id, 1 from public.jobs j, public.equipment_types t where j.ref='ROS-T' and t.name='Spare Speaker';
+select t.login('lily@x.test');
+select t.eq  ('register shows owned', $q$select owned_qty::text from public.equipment_register where name='Spare Speaker'$q$, '2');
+select t.eq  ('register shows booked today', $q$select booked_today::text from public.equipment_register where name='Spare Speaker'$q$, '1');
+select t.eq  ('register free today agrees with the clash view',
+  $q$select (r.free_today = g.free)::text from public.equipment_register r
+       join public.availability_grid(current_date, current_date) g on g.type_id = r.id where r.name='Spare Speaker'$q$, 'true');
+select t.eq  ('register has no free figure for a kit', $q$select (free_today is null)::text from public.equipment_register where name='Mic Package'$q$, 'true');
+select t.eq  ('register counts assets listed', $q$select assets_listed::text from public.equipment_register where name='Spare Speaker'$q$, '2');
+select t.eq  ('asset count matches owned, so no warning', $q$select asset_count_differs::text from public.equipment_register where name='Spare Speaker'$q$, 'false');
+select t.eq  ('issue list shows the repaired issue',
+  $q$select (status || ' ' || asset_no || ' ' || reported_by_name) from public.issue_list where type_name='Spare Speaker'$q$, 'resolved A-100 Lily');
+select t.logout();
 commit;
 
 -- ---------------------------------------------------------------------------

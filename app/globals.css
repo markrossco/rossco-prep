@@ -80,3 +80,24 @@ td select { min-height: 36px; padding: 6px 8px; width: auto; }
 .table-wrap { overflow-x: auto; }
 .row { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 @media (max-width: 640px) { h1 { font-size: 22px; } .shell { padding: 0 12px 40px; } }
+textarea {
+  width: 100%; padding: 12px; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; min-height: 80px;
+}
+input[type='checkbox'] { width: auto; min-height: 0; margin-right: 8px; }
+.check { display: flex; align-items: center; font-weight: 400; margin: 10px 0 0; }
+.filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); align-items: end; }
+.filters label { margin-top: 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.neg { color: var(--danger); font-weight: 700; }
+.muted { color: var(--muted); }
+.ok-text { color: var(--ok); margin: 12px 0 0; }
+.inline-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.inline-form input, .inline-form select { width: auto; min-height: 36px; padding: 6px 8px; }
+.stack > * + * { margin-top: 16px; }
+.badge.warn { border-color: var(--danger); color: var(--danger); }
+.badge.good { border-color: var(--ok); color: var(--ok); }
+.stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); margin: 16px 0; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+.stat strong { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 13px; }
