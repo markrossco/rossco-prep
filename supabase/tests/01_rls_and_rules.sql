@@ -513,6 +513,138 @@ select t.eq  ('asset count matches owned, so no warning', $q$select asset_count_
 select t.eq  ('issue list shows the repaired issue',
   $q$select (status || ' ' || asset_no || ' ' || reported_by_name) from public.issue_list where type_name='Spare Speaker'$q$, 'resolved A-100 Lily');
 select t.logout();
+-- ---------------------------------------------------------------------------
+-- 10. Phase 3: jobs, shortage warnings, adding kits to jobs, sub-hire orders
+-- ---------------------------------------------------------------------------
+-- fixtures as the owner
+insert into public.equipment_types (name, kind) values
+  ('Flight Case','stock'), ('Mic Clip','stock'), ('Old Clip','stock'), ('Cable Tie','consumable');
+insert into public.stock_adjustments (type_id, delta, reason) select id, 4,  'import' from public.equipment_types where name='Flight Case';
+insert into public.stock_adjustments (type_id, delta, reason) select id, 20, 'import' from public.equipment_types where name='Mic Clip';
+insert into public.stock_adjustments (type_id, delta, reason) select id, 5,  'import' from public.equipment_types where name='Old Clip';
+update public.equipment_types set active=false where name='Old Clip';
+insert into public.type_accessories (parent_type_id, child_type_id, inclusion, qty_per_parent)
+  select p.id, c.id, 'mandatory', 1 from public.equipment_types p, public.equipment_types c where p.name='Mic Package' and c.name='Mic Clip';
+insert into public.type_accessories (parent_type_id, child_type_id, inclusion, qty_per_parent)
+  select p.id, c.id, 'mandatory', 1 from public.equipment_types p, public.equipment_types c where p.name='Mic Package' and c.name='Old Clip';
+insert into public.type_accessories (parent_type_id, child_type_id, inclusion, qty_per_parent)
+  select p.id, c.id, 'default', 1 from public.equipment_types p, public.equipment_types c where p.name='Mic Package' and c.name='Rare Desk';
+insert into public.type_accessories (parent_type_id, child_type_id, inclusion, qty_per_parent)
+  select p.id, c.id, 'optional', 1 from public.equipment_types p, public.equipment_types c where p.name='Mic Package' and c.name='Cable Tie';
+
+insert into public.jobs (ref, name, out_date, return_date, status) values
+  ('ROS-S1','Short one','2027-03-01','2027-03-03','confirmed'),
+  ('ROS-S2','Short two','2027-03-03','2027-03-05','confirmed'),
+  ('ROS-S3','Fine job','2027-03-10','2027-03-11','confirmed'),
+  ('ROS-S4','Cancelled short','2027-03-01','2027-03-05','confirmed'),
+  ('ROS-K','Kit job','2027-04-01','2027-04-02','confirmed');
+insert into public.job_lines (job_id, type_id, qty_required)
+  select j.id, t.id, q from (values ('ROS-S1','Flight Case',3),('ROS-S2','Flight Case',2),('ROS-S3','Flight Case',1),('ROS-S4','Flight Case',4)) v(ref,n,q)
+  join public.jobs j on j.ref=v.ref join public.equipment_types t on t.name=v.n;
+update public.jobs set status='cancelled' where ref='ROS-S4';
+
+select t.login('ross@x.test');
+-- job names and references
+select t.ok   ('office creates a job with messy spacing', $q$insert into public.jobs (ref, name, out_date, return_date) values ('  ROS-N2 ', '  Spaced   out  job ', '2027-05-01', '2027-05-02')$q$);
+select t.eq   ('job reference and name are tidied', $q$select ref || '|' || name from public.jobs where ref='ROS-N2'$q$, 'ROS-N2|Spaced out job');
+select t.fails('a reference differing only by case is refused', $q$insert into public.jobs (ref, name, out_date, return_date) values ('ros-s1', 'Dup', '2027-05-01', '2027-05-02')$q$, '%jobs_ref_ci%');
+select t.fails('a job needs a name', $q$insert into public.jobs (ref, name, out_date, return_date) values ('ROS-N3', '   ', '2027-05-01', '2027-05-02')$q$, '%needs a name%');
+select t.fails('return before out is refused', $q$insert into public.jobs (ref, name, out_date, return_date) values ('ROS-N4', 'Backwards', '2027-05-03', '2027-05-02')$q$);
+
+-- shortage warnings
+select t.eq   ('job S2 is short by 1 on 3 Mar (4 owned, 3 + 2 out)',
+  $q$select s.short_by::text || ' ' || s.worst_day::text from public.job_shortages((select id from public.jobs where ref='ROS-S2')) s$q$, '1 2027-03-03');
+select t.eq   ('job S1 is short by 1 too (same overlap day)',
+  $q$select s.short_by::text from public.job_shortages((select id from public.jobs where ref='ROS-S1')) s$q$, '1');
+select t.eq   ('job S3 has enough', $q$select s.short_by::text from public.job_shortages((select id from public.jobs where ref='ROS-S3')) s$q$, '0');
+select t.eq   ('shortage shows required, owned and tightest free',
+  $q$select s.required::text || '/' || s.owned::text || '/' || s.min_free::text from public.job_shortages((select id from public.jobs where ref='ROS-S2')) s$q$, '2/4/-1');
+select t.eq   ('shortage agrees with the clash view',
+  $q$select (s.min_free = g.free)::text from public.job_shortages((select id from public.jobs where ref='ROS-S2')) s
+       join public.availability_grid('2027-03-03','2027-03-03') g on g.type_id = s.type_id$q$, 'true');
+select t.eq   ('a cancelled job has no shortage rows', $q$select count(*)::text from public.job_shortages((select id from public.jobs where ref='ROS-S4'))$q$, '0');
+select t.ok   ('adding over the limit is allowed (a warning, not a block)',
+  $q$insert into public.job_lines (job_id, type_id, qty_required) select j.id, t.id, 9 from public.jobs j, public.equipment_types t where j.ref='ROS-S3' and t.name='Flight Case'$q$);
+select t.eq   ('and it now shows as short', $q$select s.short_by::text from public.job_shortages((select id from public.jobs where ref='ROS-S3')) s$q$, '6');
+select t.logout();
+update public.job_lines set archived_at = now()
+ where job_id = (select id from public.jobs where ref='ROS-S3') and qty_required = 9;
+insert into public.stock_issues (type_id, qty, issue, reported_by)
+  select id, 1, 'damaged', (select id from auth.users where email='mark@x.test') from public.equipment_types where name='Flight Case';
+select t.login('ross@x.test');
+select t.eq   ('an open issue makes S3 tight: 4 - 1 = 3, needs 1, free 2',
+  $q$select s.min_free::text from public.job_shortages((select id from public.jobs where ref='ROS-S3')) s$q$, '2');
+select t.eq   ('and S2 is now short by 2', $q$select s.short_by::text from public.job_shortages((select id from public.jobs where ref='ROS-S2')) s$q$, '2');
+select t.logout();
+
+-- sub-hire lines do not use own stock
+select t.login('ross@x.test');
+select t.ok   ('sub-hire order on S2', $q$insert into public.sub_hire_orders (job_id, supplier_id, supplier_ref, hire_from, hire_to) select j.id, o.id, 'PO-S2', '2027-03-02', '2027-03-06' from public.jobs j, public.organisations o where j.ref='ROS-S2' and o.name='Hire Co'$q$);
+select t.ok   ('sub-hire order on K', $q$insert into public.sub_hire_orders (job_id, supplier_id, supplier_ref) select j.id, o.id, 'PO-K' from public.jobs j, public.organisations o where j.ref='ROS-K' and o.name='Hire Co'$q$);
+select t.fails('sub-hire dates cannot run backwards', $q$insert into public.sub_hire_orders (job_id, hire_from, hire_to) select id, '2027-03-06', '2027-03-02' from public.jobs where ref='ROS-S2'$q$);
+select t.ok   ('add_to_job: sub-hire cases for S2 on its own order',
+  $q$select public.add_to_job((select id from public.jobs where ref='ROS-S2'), (select id from public.equipment_types where name='Flight Case'), 2, 'sub_hire', (select id from public.sub_hire_orders where supplier_ref='PO-S2'))$q$);
+select t.eq   ('own-stock shortage does not change when a sub-hire line is added',
+  $q$select s.required::text from public.job_shortages((select id from public.jobs where ref='ROS-S2')) s$q$, '2');
+select t.fails('a line cannot use another job''s sub-hire order',
+  $q$select public.add_to_job((select id from public.jobs where ref='ROS-S2'), (select id from public.equipment_types where name='Flight Case'), 1, 'sub_hire', (select id from public.sub_hire_orders where supplier_ref='PO-K'))$q$, '%different job%');
+select t.fails('own stock cannot be put on a sub-hire order',
+  $q$select public.add_to_job((select id from public.jobs where ref='ROS-S2'), (select id from public.equipment_types where name='Flight Case'), 1, 'own', (select id from public.sub_hire_orders where supplier_ref='PO-S2'))$q$, '%cannot be on a sub-hire%');
+
+-- add_to_job
+select t.fails('quantity must be 1 or more', $q$select public.add_to_job((select id from public.jobs where ref='ROS-K'), (select id from public.equipment_types where name='Mic'), 0)$q$, '%1 or more%');
+select t.fails('a kit cannot be sub-hired as a package',
+  $q$select public.add_to_job((select id from public.jobs where ref='ROS-K'), (select id from public.equipment_types where name='Mic Package'), 1, 'sub_hire')$q$, '%cannot be sub-hired%');
+select t.eq   ('adding a kit reports the switched-off content it skipped',
+  $q$select (public.add_to_job((select id from public.jobs where ref='ROS-K'), (select id from public.equipment_types where name='Mic Package'), 2)->'skipped'->>0)$q$, 'Old Clip');
+select t.eq   ('kit adds its title and mandatory and default contents (4 lines)',
+  $q$select count(*)::text from public.job_lines where job_id=(select id from public.jobs where ref='ROS-K') and archived_at is null$q$, '4');
+select t.eq   ('default content quantity is times the kit quantity (4 mics x 2 kits = 8)',
+  $q$select l.qty_required::text from public.job_lines l join public.equipment_types t on t.id=l.type_id where l.job_id=(select id from public.jobs where ref='ROS-K') and t.name='Mic' and l.parent_line_id is not null$q$, '8');
+select t.eq   ('contents are tied to the kit line',
+  $q$select count(*)::text from public.job_lines c join public.job_lines p on p.id=c.parent_line_id where c.job_id=(select id from public.jobs where ref='ROS-K')$q$, '3');
+select t.eq   ('mandatory content is flagged mandatory',
+  $q$select l.mandatory::text from public.job_lines l join public.equipment_types t on t.id=l.type_id where l.job_id=(select id from public.jobs where ref='ROS-K') and t.name='Mic Clip'$q$, 'true');
+select t.eq   ('content we do not own goes on as sub-hire',
+  $q$select l.source from public.job_lines l join public.equipment_types t on t.id=l.type_id where l.job_id=(select id from public.jobs where ref='ROS-K') and t.name='Rare Desk'$q$, 'sub_hire');
+select t.eq   ('optional content is not added',
+  $q$select count(*)::text from public.job_lines l join public.equipment_types t on t.id=l.type_id where l.job_id=(select id from public.jobs where ref='ROS-K') and t.name='Cable Tie'$q$, '0');
+select t.ok   ('add a plain item', $q$select public.add_to_job((select id from public.jobs where ref='ROS-K'), (select id from public.equipment_types where name='Flight Case'), 1)$q$);
+select t.eq   ('adding the same item again reports a merge',
+  $q$select (public.add_to_job((select id from public.jobs where ref='ROS-K'), (select id from public.equipment_types where name='Flight Case'), 2)->>'merged')$q$, 'true');
+select t.eq   ('the merged line holds 1 + 2 = 3',
+  $q$select l.qty_required::text from public.job_lines l join public.equipment_types t on t.id=l.type_id where l.job_id=(select id from public.jobs where ref='ROS-K') and t.name='Flight Case' and l.archived_at is null$q$, '3');
+select t.eq   ('the merge left one line, not two',
+  $q$select count(*)::text from public.job_lines l join public.equipment_types t on t.id=l.type_id where l.job_id=(select id from public.jobs where ref='ROS-K') and t.name='Flight Case' and l.archived_at is null$q$, '1');
+select t.ok   ('add a consumable', $q$select public.add_to_job((select id from public.jobs where ref='ROS-K'), (select id from public.equipment_types where name='Cable Tie'), 50)$q$);
+select t.eq   ('consumables and kit titles never show as shortages',
+  $q$select count(*)::text from public.job_shortages((select id from public.jobs where ref='ROS-K')) s join public.equipment_types t on t.id=s.type_id where t.kind <> 'stock'$q$, '0');
+select t.logout();
+
+select t.login('lily@x.test');
+select t.fails('warehouse cannot add to a job',
+  $q$select public.add_to_job((select id from public.jobs where ref='ROS-K'), (select id from public.equipment_types where name='Mic'), 1)$q$, '%row-level security%');
+select t.fails('warehouse cannot call it without a job either', $q$select public.add_to_job(null, null, 1)$q$);
+select t.eq   ('warehouse can read the shortage warning', $q$select count(*)::text from public.job_shortages((select id from public.jobs where ref='ROS-S2'))$q$, '1');
+select t.eq   ('warehouse sees the job list', $q$select lines_total::text from public.job_list where ref='ROS-K'$q$, '5');
+select t.eq   ('job list shows client and open sub-hire count', $q$select sub_hire_open::text from public.job_list where ref='ROS-K'$q$, '1');
+select t.logout();
+select t.login('ross@x.test');
+select t.eq   ('job list counts real lines (kit title not counted, 5 of 6)',
+  $q$select lines_total::text || ' ' || lines_prepped::text from public.job_list where ref='ROS-K'$q$, '5 0');
+select t.fails('an order with live lines cannot be removed',
+  $q$update public.sub_hire_orders set archived_at=now() where supplier_ref='PO-S2'$q$, '%Remove the lines%');
+select t.ok   ('remove the line first',
+  $q$update public.job_lines set archived_at=now() where sub_hire_id=(select id from public.sub_hire_orders where supplier_ref='PO-S2')$q$);
+select t.ok   ('then the order can be removed', $q$update public.sub_hire_orders set archived_at=now() where supplier_ref='PO-S2'$q$);
+select t.fails('a removed order cannot take new lines',
+  $q$insert into public.job_lines (job_id, type_id, qty_required, source, sub_hire_id)
+     select j.id, t.id, 1, 'sub_hire', s.id from public.jobs j, public.equipment_types t, public.sub_hire_orders s where j.ref='ROS-S2' and t.name='Flight Case' and s.supplier_ref='PO-S2'$q$, '%has been removed%');
+select t.logout();
+update public.sub_hire_orders set status='received' where supplier_ref='PO-K';
+select t.login('ross@x.test');
+select t.fails('a received order cannot be removed', $q$update public.sub_hire_orders set archived_at=now() where supplier_ref='PO-K'$q$, '%been received%');
+select t.logout();
 commit;
 
 -- ---------------------------------------------------------------------------
