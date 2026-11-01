@@ -2,6 +2,7 @@ import Link from 'next/link'
 import Topbar from '@/components/topbar'
 import ActionForm from '@/components/action-form'
 import PhotoField from '@/components/photo-field'
+import ItemPicker from '@/components/item-picker'
 import { requireSession } from '@/lib/session'
 import { reportIssue } from '../issues/actions'
 
@@ -27,12 +28,7 @@ export default async function ReportPage() {
         <section className="card" style={{ maxWidth: 640 }}>
           <ActionForm action={reportIssue} submit="Send the report" clearOnSuccess>
             <label htmlFor="item_name">Item</label>
-            <input id="item_name" name="item_name" list="report-items" autoComplete="off" placeholder="Start typing the name" />
-            <datalist id="report-items">
-              {(names ?? []).map((n) => (
-                <option key={n.name} value={n.name} />
-              ))}
-            </datalist>
+            <ItemPicker names={(names ?? []).map((n) => n.name)} />
             <div className="row">
               <div>
                 <label htmlFor="issue">What happened</label>

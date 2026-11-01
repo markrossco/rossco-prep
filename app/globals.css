@@ -101,3 +101,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
 .stat strong { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
 .stat span { color: var(--muted); font-size: 13px; }
+.picker { position: relative; }
+.picker-list { list-style: none; margin: 4px 0 0; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; max-height: 300px; overflow-y: auto; }
+.picker-list li { margin: 0; }
+.picker-option { display: block; width: 100%; text-align: left; background: transparent; color: var(--text); border: 0; border-radius: 6px; padding: 12px; min-height: 44px; font-weight: 400; }
+.picker-option:hover, .picker-option:focus { background: var(--bg); }
+.picker-empty { padding: 10px 12px; color: var(--muted); font-size: 14px; }

@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import Topbar from '@/components/topbar'
 import ActionForm from '@/components/action-form'
+import ItemPicker from '@/components/item-picker'
 import { requireSession } from '@/lib/session'
 import { isUuid } from '@/lib/db'
 import { isOffice } from '@/lib/roles'
@@ -373,12 +374,7 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
               <ActionForm action={addToJob} submit="Add" clearOnSuccess>
                 <input type="hidden" name="job_id" value={job.id} />
                 <label htmlFor="item_name">Item</label>
-                <input id="item_name" name="item_name" list="job-item-names" autoComplete="off" placeholder="Start typing the name" />
-                <datalist id="job-item-names">
-                  {(itemNames?.data ?? []).map((n) => (
-                    <option key={n.name} value={n.name} />
-                  ))}
-                </datalist>
+                <ItemPicker names={(itemNames?.data ?? []).map((n) => n.name)} />
                 <div className="row">
                   <div>
                     <label htmlFor="qty">Quantity</label>
