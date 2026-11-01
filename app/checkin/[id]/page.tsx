@@ -6,11 +6,24 @@ import ActionForm from '@/components/action-form'
 import { requireSession } from '@/lib/session'
 import { isUuid } from '@/lib/db'
 import { fmtDate, statusLabel } from '@/lib/jobs'
+import { pendingReports, takeFor } from '@/lib/checkin'
 import { checkInJob } from '../../warehouse/actions'
 
 type Job = { id: string; ref: string; name: string; status: string; out_date: string; return_date: string; client: { name: string } | null }
+type Reported = {
+  id: string
+  type_name: string
+  qty: number
+  issue: string
+  status: string
+  note: string | null
+  photo_path: string | null
+  reported_by_name: string | null
+  reported_at: string
+}
 type Line = {
   id: string
+  type_id: string | null
   description: string | null
   source: 'own' | 'sub_hire'
   parent_line_id: string | null
@@ -34,7 +47,7 @@ export default async function CheckinPage({ params }: { params: Promise<{ id: st
   const [{ data: lineData }, { data: progData }] = await Promise.all([
     supabase
       .from('job_lines')
-      .select('id, description, source, parent_line_id, type:equipment_types(name, kind)')
+      .select('id, type_id, description, source, parent_line_id, type:equipment_types(name, kind)')
       .eq('job_id', id)
       .is('archived_at', null)
       .order('added_at')
@@ -43,6 +56,31 @@ export default async function CheckinPage({ params }: { params: Promise<{ id: st
   ])
   const lines = (lineData ?? []) as unknown as Line[]
   const prog = new Map(((progData ?? []) as Prog[]).map((p) => [p.line_id, p]))
+  const pending = await pendingReports(supabase, id, lines, prog)
+
+  // Kit reported on this job already, with photos
+  const { data: reportedData } = await supabase
+    .from('issue_list')
+    .select('id, type_name, qty, issue, status, note, photo_path, reported_by_name, reported_at')
+    .eq('job_id', id)
+    .order('reported_at')
+  const reported = (reportedData ?? []) as Reported[]
+  const photoPaths = reported.map((r) => r.photo_path).filter((p): p is string => !!p)
+  const signed = photoPaths.length ? await supabase.storage.from('issue-photos').createSignedUrls(photoPaths, 3600) : null
+  const photoUrl = new Map((signed?.data ?? []).filter((x) => x.signedUrl).map((x) => [x.path as string, x.signedUrl]))
+  const reportedByType = new Map<string, string>()
+  for (const l of lines) {
+    const p = l.type_id ? pending.get(l.type_id) : undefined
+    if (l.type_id && p && (p.damaged || p.missing)) {
+      reportedByType.set(l.type_id, [p.damaged ? `${p.damaged} reported damaged` : '', p.missing ? `${p.missing} reported missing` : ''].filter(Boolean).join(', '))
+    }
+  }
+  // Pre-fill each line with what was already reported, then hand out what is left to the next line of the same item
+  const prefill = new Map<string, { dam: number; mis: number }>()
+  for (const l of lines) {
+    const { out, back } = { out: prog.get(l.id)?.prepped_qty ?? 0, back: (prog.get(l.id)?.returned_qty ?? 0) + (prog.get(l.id)?.missing_qty ?? 0) + (prog.get(l.id)?.damaged_qty ?? 0) }
+    if (out - back > 0 && l.type?.kind !== 'kit') prefill.set(l.id, takeFor(pending, l.type_id, out - back))
+  }
   const info = (l: Line) => {
     const p = prog.get(l.id)
     const out = p?.prepped_qty ?? 0
@@ -61,10 +99,16 @@ export default async function CheckinPage({ params }: { params: Promise<{ id: st
     const { out, back, remaining, p } = info(l)
     if (out === 0) return null
     const name = l.type?.name ?? l.description ?? ''
+    const pre = prefill.get(l.id) ?? { dam: 0, mis: 0 }
     return (
       <tr key={l.id}>
         <td style={child ? { paddingLeft: 28 } : undefined}>
           {name}{' '}
+          {pre.dam + pre.mis > 0 && (
+            <span className="badge warn">
+              {[pre.dam ? `${pre.dam} reported damaged` : '', pre.mis ? `${pre.mis} reported missing` : ''].filter(Boolean).join(', ')}
+            </span>
+          )}
           {l.source === 'sub_hire' && <span className="badge">sub-hire</span>}
           {l.type?.kind === 'consumable' && <span className="badge">consumable</span>}
         </td>
@@ -75,9 +119,9 @@ export default async function CheckinPage({ params }: { params: Promise<{ id: st
         <td className="num">{remaining > 0 ? <strong>{remaining}</strong> : <span className="badge good">all back</span>}</td>
         {remaining > 0 ? (
           <>
-            <td><input name={`ret_${l.id}`} inputMode="numeric" defaultValue={remaining} aria-label={`${name} returned OK`} style={{ width: 64 }} /></td>
-            <td><input name={`mis_${l.id}`} inputMode="numeric" placeholder="0" aria-label={`${name} missing`} style={{ width: 64 }} /></td>
-            <td><input name={`dam_${l.id}`} inputMode="numeric" placeholder="0" aria-label={`${name} damaged`} style={{ width: 64 }} /></td>
+            <td><input name={`ret_${l.id}`} inputMode="numeric" defaultValue={remaining - pre.dam - pre.mis} aria-label={`${name} returned OK`} style={{ width: 64 }} /></td>
+            <td><input name={`mis_${l.id}`} inputMode="numeric" placeholder="0" defaultValue={pre.mis || undefined} aria-label={`${name} missing`} style={{ width: 64 }} /></td>
+            <td><input name={`dam_${l.id}`} inputMode="numeric" placeholder="0" defaultValue={pre.dam || undefined} aria-label={`${name} damaged`} style={{ width: 64 }} /></td>
           </>
         ) : (
           <td colSpan={3}></td>
@@ -103,11 +147,46 @@ export default async function CheckinPage({ params }: { params: Promise<{ id: st
 
         {items.length === 0 && <p className="card">Nothing was prepped on this job, so there is nothing to check in.</p>}
 
+        {reported.length > 0 && (
+          <section className="card" style={{ marginBottom: 20, borderColor: 'var(--danger)' }}>
+            <h2 style={{ marginTop: 0 }}>Already reported on this job</h2>
+            <p className="muted" style={{ marginTop: 0 }}>
+              These are filled in below. Check them against what comes back. They will not be reported twice.
+            </p>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Item</th><th>Issue</th><th className="num">Qty</th><th>Reported by</th><th>Note</th></tr></thead>
+                <tbody>
+                  {reported.map((r) => (
+                    <tr key={r.id}>
+                      <td>{r.type_name}</td>
+                      <td>{r.issue === 'damaged' ? 'Damaged' : r.issue === 'missing' ? 'Missing' : 'In repair'}{r.status === 'resolved' && <span className="badge good">resolved</span>}</td>
+                      <td className="num">{r.qty}</td>
+                      <td className="muted">{r.reported_by_name ?? 'unknown'} · {new Date(r.reported_at).toLocaleString('en-GB', { timeZone: 'Europe/London', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
+                      <td className="muted">
+                        {r.note ?? ''}
+                        {r.photo_path && photoUrl.get(r.photo_path) ? (
+                          <>
+                            {' '}
+                            <a href={photoUrl.get(r.photo_path) ?? '#'} target="_blank" rel="noreferrer">Photo</a>
+                          </>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
         {canBook && (
           <>
             <section className="card" style={{ maxWidth: 640 }}>
               <h2 style={{ marginTop: 0 }}>Everything came back fine</h2>
-              <p className="muted" style={{ marginTop: 0 }}>Books every line still out as returned OK.</p>
+              <p className="muted" style={{ marginTop: 0 }}>
+                Books every line still out as returned OK{reportedByType.size > 0 ? ', except kit already reported damaged or missing, which is booked back as reported' : ''}.
+              </p>
               <ActionForm action={checkInJob} submit="Book everything back" small>
                 <input type="hidden" name="job_id" value={id} />
                 <input type="hidden" name="mode" value="all" />

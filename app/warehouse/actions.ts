@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { actionDb, friendly, isUuid } from '@/lib/db'
+import { pendingReports, takeFor } from '@/lib/checkin'
 import type { FormState } from '@/components/action-form'
 
 type Db = Awaited<ReturnType<typeof actionDb>>['supabase']
@@ -72,23 +73,31 @@ export async function markJob(_prev: FormState, fd: FormData): Promise<FormState
 }
 
 type Progress = { line_id: string; prepped_qty: number; returned_qty: number; missing_qty: number; damaged_qty: number }
+type OutLine = { id: string; type_id: string | null; remaining: number }
 
 /** Lines that went out (prepped) and still have something to come back, with how much. */
 async function outstanding(supabase: Db, jobId: string) {
   const [{ data: lines }, { data: progress }] = await Promise.all([
-    supabase.from('job_lines').select('id, type:equipment_types(kind)').eq('job_id', jobId).is('archived_at', null),
+    supabase.from('job_lines').select('id, type_id, type:equipment_types(kind)').eq('job_id', jobId).is('archived_at', null),
     supabase.from('line_progress').select('line_id, prepped_qty, returned_qty, missing_qty, damaged_qty').eq('job_id', jobId),
   ])
   const prog = new Map(((progress ?? []) as Progress[]).map((p) => [p.line_id, p]))
-  const out: { id: string; remaining: number }[] = []
-  for (const l of (lines ?? []) as unknown as { id: string; type: { kind: string } | null }[]) {
+  const out: OutLine[] = []
+  const all = (lines ?? []) as unknown as { id: string; type_id: string | null; type: { kind: string } | null }[]
+  for (const l of all) {
     if (l.type?.kind === 'kit') continue
     const p = prog.get(l.id)
     if (!p) continue
     const remaining = p.prepped_qty - p.returned_qty - p.missing_qty - p.damaged_qty
-    if (remaining > 0) out.push({ id: l.id, remaining })
+    if (remaining > 0) out.push({ id: l.id, type_id: l.type_id, remaining })
   }
-  return out
+  const pending = await pendingReports(
+    supabase,
+    jobId,
+    all.map((l) => ({ id: l.id, type_id: l.type_id })),
+    prog,
+  )
+  return { open: out, pending }
 }
 
 /** Check-in. mode "all" books everything still out as returned OK. Otherwise reads ret_, mis_ and dam_ boxes per line. */
@@ -98,12 +107,16 @@ export async function checkInJob(_prev: FormState, fd: FormData): Promise<FormSt
     const jobId = text(fd, 'job_id')
     if (!isUuid(jobId)) return { error: 'Missing job.' }
     const note = text(fd, 'note') || null
-    const open = await outstanding(supabase, jobId)
+    const { open, pending } = await outstanding(supabase, jobId)
     if (!open.length) return { error: 'Everything that went out is already booked back.' }
 
     const work: { id: string; ret: number; mis: number; dam: number }[] = []
     if (text(fd, 'mode') === 'all') {
-      for (const l of open) work.push({ id: l.id, ret: l.remaining, mis: 0, dam: 0 })
+      // Kit already reported on this job is booked back as damaged or missing, the rest as returned OK
+      for (const l of open) {
+        const { dam, mis } = takeFor(pending, l.type_id, l.remaining)
+        work.push({ id: l.id, ret: l.remaining - dam - mis, mis, dam })
+      }
     } else {
       for (const l of open) {
         const ret = qtyOf(text(fd, `ret_${l.id}`) || '0')

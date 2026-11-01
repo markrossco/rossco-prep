@@ -712,6 +712,36 @@ select t.fails('an issue photo must be in your own folder',
 select t.ok   ('an issue photo in your own folder is accepted',
   $q$insert into public.stock_issues (type_id, qty, issue, photo_path, reported_by) select id, 1, 'damaged', auth.uid()::text || '/pic.jpg', auth.uid() from public.equipment_types where name='Stage Box'$q$);
 select t.logout();
+-- ---------------------------------------------------------------------------
+-- 12. Check-in does not double-count kit already reported on the job
+-- ---------------------------------------------------------------------------
+insert into public.jobs (ref, name, out_date, return_date, status) values
+  ('ROS-W2','Reported mid-job','2027-07-01','2027-07-03','confirmed'),
+  ('ROS-W3','Fully reported','2027-07-05','2027-07-06','confirmed');
+insert into public.job_lines (job_id, type_id, qty_required)
+  select j.id, t.id, q from (values ('ROS-W2',5),('ROS-W3',2)) v(ref,q)
+  join public.jobs j on j.ref=v.ref join public.equipment_types t on t.name='Stage Box';
+select t.login('lily@x.test');
+select t.ok  ('prep W2', $q$insert into public.line_events (line_id, action, qty) select l.id, 'prepped', 5 from public.job_lines l where l.job_id=(select id from public.jobs where ref='ROS-W2')$q$);
+select t.ok  ('prep W3', $q$insert into public.line_events (line_id, action, qty) select l.id, 'prepped', 2 from public.job_lines l where l.job_id=(select id from public.jobs where ref='ROS-W3')$q$);
+select t.ok  ('W2 out', $q$select public.set_job_status((select id from public.jobs where ref='ROS-W2'), 'out')$q$);
+select t.ok  ('W3 out', $q$select public.set_job_status((select id from public.jobs where ref='ROS-W3'), 'out')$q$);
+select t.ok  ('quick report on W2: 1 damaged Stage Box mid-job',
+  $q$insert into public.stock_issues (type_id, qty, issue, job_id, note, reported_by) select t.id, 1, 'damaged', j.id, 'cracked', auth.uid() from public.equipment_types t, public.jobs j where t.name='Stage Box' and j.ref='ROS-W2'$q$);
+select t.ok  ('quick report on W3: 1 missing Stage Box mid-job',
+  $q$insert into public.stock_issues (type_id, qty, issue, job_id, note, reported_by) select t.id, 1, 'missing', j.id, 'not on site', auth.uid() from public.equipment_types t, public.jobs j where t.name='Stage Box' and j.ref='ROS-W3'$q$);
+select t.ok  ('check in W2: 3 back, 2 damaged',
+  $q$select public.check_in_line((select id from public.job_lines where job_id=(select id from public.jobs where ref='ROS-W2')), 3, 0, 2)$q$);
+select t.eq  ('W2 damaged issues total 2: the 1 reported plus only the 1 new',
+  $q$select coalesce(sum(qty),0)::text from public.stock_issues where job_id=(select id from public.jobs where ref='ROS-W2') and issue='damaged'$q$, '2');
+select t.eq  ('W2 progress shows 2 damaged booked back',
+  $q$select damaged_qty::text from public.line_progress where job_id=(select id from public.jobs where ref='ROS-W2')$q$, '2');
+select t.ok  ('check in W3: 1 back, 1 missing (already reported)',
+  $q$select public.check_in_line((select id from public.job_lines where job_id=(select id from public.jobs where ref='ROS-W3')), 1, 1, 0)$q$);
+select t.eq  ('W3 missing issues stay at the 1 reported, no duplicate',
+  $q$select coalesce(sum(qty),0)::text from public.stock_issues where job_id=(select id from public.jobs where ref='ROS-W3') and issue='missing'$q$, '1');
+select t.eq  ('W3 is returned', $q$select status from public.jobs where ref='ROS-W3'$q$, 'returned');
+select t.logout();
 commit;
 
 -- ---------------------------------------------------------------------------
