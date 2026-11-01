@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.env
+.env*.local
+.vercel/
+# Never commit imports or personal data
+/import-data/
+/data/
+*contact*.csv
+*.csv
+# Local database used for tests
+/tmp/
