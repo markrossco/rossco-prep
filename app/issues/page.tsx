@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import Topbar from '@/components/topbar'
 import ActionForm from '@/components/action-form'
+import PhotoField from '@/components/photo-field'
 import { requireSession } from '@/lib/session'
 import { reportIssue, resolveIssue } from './actions'
 
@@ -14,6 +15,8 @@ type Issue = {
   status: string
   resolution: string | null
   note: string | null
+  photo_path: string | null
+  job_ref: string | null
   reported_by_name: string | null
   reported_at: string
   resolved_at: string | null
@@ -43,6 +46,10 @@ export default async function IssuesPage({
       .returns<Issue[]>(),
     supabase.from('equipment_types').select('name').eq('kind', 'stock').eq('active', true).is('archived_at', null).order('name').limit(3000),
   ])
+
+  const photoPaths = (issues ?? []).map((i) => i.photo_path).filter((p): p is string => !!p)
+  const signed = photoPaths.length ? await supabase.storage.from('issue-photos').createSignedUrls(photoPaths, 3600) : null
+  const photoUrl = new Map((signed?.data ?? []).filter((x) => x.signedUrl).map((x) => [x.path as string, x.signedUrl]))
 
   return (
     <>
@@ -85,6 +92,7 @@ export default async function IssuesPage({
               </div>
               <label htmlFor="note">Note</label>
               <input id="note" name="note" />
+              <PhotoField />
             </ActionForm>
           </section>
         )}
@@ -107,7 +115,16 @@ export default async function IssuesPage({
                   <td>{ISSUE_LABEL[i.issue] ?? i.issue}</td>
                   <td className="num">{i.qty}</td>
                   <td className="muted">{when(i.reported_at)} · {i.reported_by_name ?? 'unknown'}{!resolvedView && ` · ${i.days_open}d`}</td>
-                  <td className="muted">{i.note ?? ''}</td>
+                  <td className="muted">
+                    {i.note ?? ''}
+                    {i.job_ref && <span className="badge">{i.job_ref}</span>}
+                    {i.photo_path && photoUrl.get(i.photo_path) ? (
+                      <>
+                        {' '}
+                        <a href={photoUrl.get(i.photo_path) ?? '#'} target="_blank" rel="noreferrer">Photo</a>
+                      </>
+                    ) : null}
+                  </td>
                   <td>
                     {resolvedView ? (
                       <span className="muted">{i.resolution?.replace('_', ' ')} {i.resolved_at ? when(i.resolved_at) : ''}{i.resolved_by_name ? ` · ${i.resolved_by_name}` : ''}</span>

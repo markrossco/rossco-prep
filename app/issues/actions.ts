@@ -36,11 +36,18 @@ export async function reportIssue(_prev: FormState, fd: FormData): Promise<FormS
       assetId = data[0].id
     }
 
+    const jobId = text(fd, 'job_id')
+    if (jobId && !isUuid(jobId)) return { error: 'Missing job.' }
+    const photo = text(fd, 'photo_path')
+    if (photo && !photo.startsWith(`${user.id}/`)) return { error: 'That photo was not uploaded by you.' }
+
     const { error } = await supabase.from('stock_issues').insert({
       type_id: typeId,
       asset_id: assetId,
       qty: assetId ? 1 : qty,
       issue,
+      job_id: jobId || null,
+      photo_path: photo || null,
       note: text(fd, 'note') || null,
       reported_by: user.id,
     })

@@ -19,11 +19,11 @@ const WAREHOUSE_LOOKUP: Tile[] = [
   { title: 'Issues', note: 'Report and track damaged or missing kit', href: '/issues' },
 ]
 const WAREHOUSE: Tile[] = [
-  { title: 'Today and this week', note: 'Jobs going out and coming back', phase: 4 },
-  { title: 'Return check-in', note: 'Book equipment back in', phase: 4 },
-  { title: 'Sub-hire receipt', note: 'Receive and return sub-hires', phase: 4 },
-  { title: 'Quick report', note: 'Report lost or damaged kit', phase: 4 },
-  { title: 'My activity', note: 'What you prepped and checked in', phase: 4 },
+  { title: 'Today and this week', note: 'Jobs to prep and jobs coming back', href: '/warehouse' },
+  { title: 'Return check-in', note: 'Book equipment back in', href: '/checkin' },
+  { title: 'Sub-hire receipt', note: 'Receive and return sub-hires', href: '/receive' },
+  { title: 'Quick report', note: 'Report lost or damaged kit, with a photo', href: '/report' },
+  { title: 'My activity', note: 'What you prepped and checked in', href: '/activity' },
 ]
 
 export default async function Home() {
