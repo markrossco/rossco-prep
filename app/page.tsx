@@ -6,14 +6,15 @@ import { isOffice, isWarehouse } from '@/lib/roles'
 type Tile = { title: string; note: string; href?: string; phase?: number }
 
 const OFFICE: Tile[] = [
-  { title: 'Jobs board', note: 'Jobs by out date, with shortages flagged', phase: 3 },
-  { title: 'New job', note: 'ROS number, dates, client and venue', phase: 3 },
+  { title: 'Jobs', note: 'Every job by out date, with its equipment list', href: '/jobs' },
+  { title: 'New job', note: 'ROS number, dates, client and venue', href: '/jobs/new' },
   { title: 'Equipment register', note: 'Every item, owned, free and issues', href: '/equipment' },
   { title: 'Clash view', note: 'Free kit per day, drag between jobs', phase: 5 },
   { title: 'Issues', note: 'Damaged, missing and in repair', href: '/issues' },
 ]
 const LEADS: Tile[] = [{ title: 'Kits and packages', note: 'Edit what each kit contains', href: '/kits' }]
 const WAREHOUSE_LOOKUP: Tile[] = [
+  { title: 'Jobs', note: 'See what is going out and what is on each list', href: '/jobs' },
   { title: 'Equipment register', note: 'Every item, owned, free and issues', href: '/equipment' },
   { title: 'Issues', note: 'Report and track damaged or missing kit', href: '/issues' },
 ]

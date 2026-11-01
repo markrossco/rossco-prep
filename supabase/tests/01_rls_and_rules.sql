@@ -632,6 +632,22 @@ select t.logout();
 select t.login('ross@x.test');
 select t.eq   ('job list counts real lines (kit title not counted, 5 of 6)',
   $q$select lines_total::text || ' ' || lines_prepped::text from public.job_list where ref='ROS-K'$q$, '5 0');
+select t.eq   ('cover: S1 is short by 2 before',
+  $q$select s.short_by::text from public.job_shortages((select id from public.jobs where ref='ROS-S1')) s$q$, '2');
+select t.eq   ('cover moves 2 of 3 over to sub-hire',
+  $q$select public.cover_with_sub_hire((select id from public.jobs where ref='ROS-S1'), (select id from public.equipment_types where name='Flight Case'), 2)::text$q$, '2');
+select t.eq   ('cover: own line on S1 is now 1',
+  $q$select l.qty_required::text from public.job_lines l join public.equipment_types t on t.id=l.type_id where l.job_id=(select id from public.jobs where ref='ROS-S1') and t.name='Flight Case' and l.source='own'$q$, '1');
+select t.eq   ('cover: a sub-hire line of 2 now exists on S1',
+  $q$select l.qty_required::text from public.job_lines l join public.equipment_types t on t.id=l.type_id where l.job_id=(select id from public.jobs where ref='ROS-S1') and t.name='Flight Case' and l.source='sub_hire'$q$, '2');
+select t.eq   ('cover: S1 is no longer short (4 - 1 issue - 1 - 2 on 3 Mar = 0)',
+  $q$select s.short_by::text from public.job_shortages((select id from public.jobs where ref='ROS-S1')) s$q$, '0');
+select t.eq   ('cover never moves more than the job has on own stock',
+  $q$select public.cover_with_sub_hire((select id from public.jobs where ref='ROS-S1'), (select id from public.equipment_types where name='Flight Case'), 5)::text$q$, '1');
+select t.fails('cover refuses a consumable',
+  $q$select public.cover_with_sub_hire((select id from public.jobs where ref='ROS-K'), (select id from public.equipment_types where name='Cable Tie'), 1)$q$, '%Only stock%');
+select t.fails('cover refuses an item with nothing on own stock',
+  $q$select public.cover_with_sub_hire((select id from public.jobs where ref='ROS-S3'), (select id from public.equipment_types where name='Mic'), 1)$q$, '%no own-stock%');
 select t.fails('an order with live lines cannot be removed',
   $q$update public.sub_hire_orders set archived_at=now() where supplier_ref='PO-S2'$q$, '%Remove the lines%');
 select t.ok   ('remove the line first',

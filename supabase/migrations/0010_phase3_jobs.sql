@@ -252,6 +252,59 @@ end
 $$;
 
 -- ---------------------------------------------------------------------------
+-- 5b. Cover a shortage: move some of an item's own-stock quantity on a job over to sub-hire.
+--     Takes from the largest own-stock lines first, then adds (or tops up) a sub-hire line.
+--     All or nothing: if a line has more prepped than would be left, nothing changes.
+--     Returns how many were moved (never more than the job has on own stock).
+-- ---------------------------------------------------------------------------
+create or replace function public.cover_with_sub_hire(
+  p_job       uuid,
+  p_type      uuid,
+  p_qty       integer,
+  p_sub_hire  uuid default null
+)
+returns integer
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  l       record;
+  v_kind  text;
+  v_left  integer := p_qty;
+  v_take  integer;
+  v_moved integer := 0;
+begin
+  if p_qty is null or p_qty < 1 then
+    raise exception 'The quantity must be 1 or more';
+  end if;
+  select kind into v_kind from public.equipment_types where id = p_type;
+  if v_kind is distinct from 'stock' then
+    raise exception 'Only stock items can be moved to sub-hire';
+  end if;
+
+  for l in
+    select id, qty_required
+    from public.job_lines
+    where job_id = p_job and type_id = p_type and source = 'own' and archived_at is null and qty_required > 0
+    order by qty_required desc, added_at
+  loop
+    exit when v_left = 0;
+    v_take := least(l.qty_required, v_left);
+    update public.job_lines set qty_required = qty_required - v_take where id = l.id;
+    v_left  := v_left - v_take;
+    v_moved := v_moved + v_take;
+  end loop;
+
+  if v_moved = 0 then
+    raise exception 'This item has no own-stock quantity on the job';
+  end if;
+  perform public.add_to_job(p_job, p_type, v_moved, 'sub_hire', p_sub_hire);
+  return v_moved;
+end
+$$;
+
+-- ---------------------------------------------------------------------------
 -- 6. Job list for the Jobs screen (follows the caller's access)
 --    lines_total counts real lines (kit titles and zero quantities are not counted)
 -- ---------------------------------------------------------------------------
@@ -293,8 +346,10 @@ left join lateral (
 -- ---------------------------------------------------------------------------
 revoke all on function public.job_shortages(uuid)                          from public, anon;
 revoke all on function public.add_to_job(uuid, uuid, integer, text, uuid)  from public, anon;
+revoke all on function public.cover_with_sub_hire(uuid, uuid, integer, uuid) from public, anon;
 grant execute on function public.job_shortages(uuid)                          to authenticated;
 grant execute on function public.add_to_job(uuid, uuid, integer, text, uuid)  to authenticated;
+grant execute on function public.cover_with_sub_hire(uuid, uuid, integer, uuid) to authenticated;
 
 revoke all on public.job_list from anon;
 grant select on public.job_list to authenticated;
