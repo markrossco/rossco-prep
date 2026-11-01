@@ -661,6 +661,57 @@ update public.sub_hire_orders set status='received' where supplier_ref='PO-K';
 select t.login('ross@x.test');
 select t.fails('a received order cannot be removed', $q$update public.sub_hire_orders set archived_at=now() where supplier_ref='PO-K'$q$, '%been received%');
 select t.logout();
+-- ---------------------------------------------------------------------------
+-- 11. Phase 4: warehouse prep, sub-hire receipt, check-in, photos
+-- ---------------------------------------------------------------------------
+insert into public.equipment_types (name, kind) values ('Stage Box','stock'), ('Hire Mixer','stock');
+insert into public.stock_adjustments (type_id, delta, reason) select id, 10, 'import' from public.equipment_types where name='Stage Box';
+insert into public.jobs (ref, name, out_date, return_date, status) values ('ROS-W','Warehouse job','2027-06-01','2027-06-03','confirmed');
+insert into public.sub_hire_orders (job_id, supplier_id, supplier_ref) select j.id, o.id, 'PO-W' from public.jobs j, public.organisations o where j.ref='ROS-W' and o.name='Hire Co';
+insert into public.job_lines (job_id, type_id, qty_required)
+  select j.id, t.id, 4 from public.jobs j, public.equipment_types t where j.ref='ROS-W' and t.name='Stage Box';
+insert into public.job_lines (job_id, type_id, qty_required, source, sub_hire_id)
+  select j.id, t.id, 2, 'sub_hire', s.id from public.jobs j, public.equipment_types t, public.sub_hire_orders s where j.ref='ROS-W' and t.name='Hire Mixer' and s.supplier_ref='PO-W';
+
+select t.login('lily@x.test');
+select t.fails('cannot book back what has not gone out',
+  $q$select public.check_in_line((select l.id from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Stage Box' and l.job_id=(select id from public.jobs where ref='ROS-W')), 1, 0, 0)$q$, '%more than went out%');
+select t.fails('cannot prep a sub-hire line before it is received',
+  $q$insert into public.line_events (line_id, action, qty, user_id) select l.id, 'prepped', 1, auth.uid() from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Hire Mixer' and l.job_id=(select id from public.jobs where ref='ROS-W')$q$, '%Receive the sub-hire%');
+select t.ok   ('warehouse receives the sub-hire line',
+  $q$insert into public.line_events (line_id, action, qty, user_id) select l.id, 'received_sub_hire', 2, auth.uid() from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Hire Mixer' and l.job_id=(select id from public.jobs where ref='ROS-W')$q$);
+select t.ok   ('warehouse marks the order received', $q$update public.sub_hire_orders set status='received' where supplier_ref='PO-W'$q$);
+select t.ok   ('prep 3 of 4 stage boxes',
+  $q$insert into public.line_events (line_id, action, qty, user_id) select l.id, 'prepped', 3, auth.uid() from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Stage Box' and l.job_id=(select id from public.jobs where ref='ROS-W' )$q$);
+select t.eq   ('job goes to prepping', $q$select status from public.jobs where ref='ROS-W'$q$, 'prepping');
+select t.ok   ('prep the last stage box', $q$insert into public.line_events (line_id, action, qty, user_id) select l.id, 'prepped', 1, auth.uid() from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Stage Box' and l.job_id=(select id from public.jobs where ref='ROS-W')$q$);
+select t.ok   ('prep the hire mixers', $q$insert into public.line_events (line_id, action, qty, user_id) select l.id, 'prepped', 2, auth.uid() from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Hire Mixer' and l.job_id=(select id from public.jobs where ref='ROS-W')$q$);
+select t.eq   ('job goes to prepped when every line is done', $q$select status from public.jobs where ref='ROS-W'$q$, 'prepped');
+select t.ok   ('warehouse marks the job out', $q$select public.set_job_status((select id from public.jobs where ref='ROS-W'), 'out')$q$);
+
+select t.fails('check-in needs a quantity', $q$select public.check_in_line((select l.id from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Stage Box' and l.job_id=(select id from public.jobs where ref='ROS-W')), 0, 0, 0)$q$, '%Enter a quantity%');
+select t.fails('check-in refuses negative quantities', $q$select public.check_in_line((select l.id from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Stage Box' and l.job_id=(select id from public.jobs where ref='ROS-W')), -1, 2, 0)$q$, '%negative%');
+select t.fails('cannot book back more than went out',
+  $q$select public.check_in_line((select l.id from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Stage Box' and l.job_id=(select id from public.jobs where ref='ROS-W')), 5, 0, 0)$q$, '%more than went out%');
+select t.ok   ('book back 2 returned, 1 missing, 1 damaged',
+  $q$select public.check_in_line((select l.id from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Stage Box' and l.job_id=(select id from public.jobs where ref='ROS-W')), 2, 1, 1, 'one bent, one gone')$q$);
+select t.eq   ('progress shows 2 returned, 1 missing, 1 damaged',
+  $q$select returned_qty::text || '/' || missing_qty::text || '/' || damaged_qty::text from public.line_progress lp join public.job_lines l on l.id=lp.line_id join public.equipment_types t on t.id=l.type_id where t.name='Stage Box' and l.job_id=(select id from public.jobs where ref='ROS-W')$q$, '2/1/1');
+select t.eq   ('missing and damaged became two open issues on the job',
+  $q$select count(*)::text from public.issue_list where type_name='Stage Box' and status='open' and job_ref='ROS-W'$q$, '2');
+select t.eq   ('the register now shows 2 in issue', $q$select open_issue_qty::text from public.equipment_register where name='Stage Box'$q$, '2');
+select t.eq   ('the job is still out while the mixers are not back', $q$select status from public.jobs where ref='ROS-W'$q$, 'out');
+select t.ok   ('book back the hire mixers',
+  $q$select public.check_in_line((select l.id from public.job_lines l join public.equipment_types t on t.id=l.type_id where t.name='Hire Mixer' and l.job_id=(select id from public.jobs where ref='ROS-W')), 2, 0, 0)$q$);
+select t.eq   ('the job becomes returned on its own', $q$select status from public.jobs where ref='ROS-W'$q$, 'returned');
+select t.eq   ('check-in is stamped with the person', $q$select count(*)::text from public.line_events e join public.job_lines l on l.id=e.line_id where e.action='returned' and e.user_id=auth.uid() and l.job_id=(select id from public.jobs where ref='ROS-W')$q$, '2');
+
+-- photos
+select t.fails('an issue photo must be in your own folder',
+  $q$insert into public.stock_issues (type_id, qty, issue, photo_path, reported_by) select id, 1, 'damaged', 'someone-else/pic.jpg', auth.uid() from public.equipment_types where name='Stage Box'$q$, '%not uploaded by you%');
+select t.ok   ('an issue photo in your own folder is accepted',
+  $q$insert into public.stock_issues (type_id, qty, issue, photo_path, reported_by) select id, 1, 'damaged', auth.uid()::text || '/pic.jpg', auth.uid() from public.equipment_types where name='Stage Box'$q$);
+select t.logout();
 commit;
 
 -- ---------------------------------------------------------------------------
