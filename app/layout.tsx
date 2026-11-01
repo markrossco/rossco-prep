@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next'
+import '@fontsource-variable/plus-jakarta-sans'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -11,7 +12,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  themeColor: '#1f4e79',
+  themeColor: '#4f46e5',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
