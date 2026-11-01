@@ -742,6 +742,80 @@ select t.eq  ('W3 missing issues stay at the 1 reported, no duplicate',
   $q$select coalesce(sum(qty),0)::text from public.stock_issues where job_id=(select id from public.jobs where ref='ROS-W3') and issue='missing'$q$, '1');
 select t.eq  ('W3 is returned', $q$select status from public.jobs where ref='ROS-W3'$q$, 'returned');
 select t.logout();
+
+-- ---------------------------------------------------------------------------
+-- 13. Phase 5: clash grid and moving kit between jobs
+-- ---------------------------------------------------------------------------
+insert into public.equipment_types (name, kind) values ('Clash Case','stock'), ('Idle Case','stock');
+insert into public.stock_adjustments (type_id, delta, reason) select id, 5, 'import' from public.equipment_types where name='Clash Case';
+insert into public.stock_adjustments (type_id, delta, reason) select id, 2, 'import' from public.equipment_types where name='Idle Case';
+insert into public.jobs (ref, name, out_date, return_date, status) values
+  ('ROS-C1','Clash one','2027-09-01','2027-09-03','confirmed'),
+  ('ROS-C2','Clash two','2027-09-02','2027-09-04','confirmed'),
+  ('ROS-C3','Clash three provisional','2027-09-02','2027-09-02','provisional'),
+  ('ROS-C4','Clash target','2027-09-10','2027-09-11','confirmed');
+insert into public.job_lines (job_id, type_id, qty_required)
+  select j.id, t.id, q from (values ('ROS-C1',4),('ROS-C2',3),('ROS-C3',1)) v(ref,q)
+  join public.jobs j on j.ref=v.ref join public.equipment_types t on t.name='Clash Case';
+
+select t.login('ross@x.test');
+select t.eq  ('grid shows the booked quantity per day',
+  $q$select g.alloc::text from public.clash_grid('2027-09-01','2027-09-04', true, null, null, 'Clash Case', 'booked') g$q$, '{4,8,7,3}');
+select t.eq  ('grid free low point counts issues and bookings (5 owned, 8 booked)',
+  $q$select g.min_free::text from public.clash_grid('2027-09-01','2027-09-04', true, null, null, 'Clash Case', 'booked') g$q$, '-3');
+select t.eq  ('without provisional jobs the 2nd drops to 7',
+  $q$select g.alloc::text from public.clash_grid('2027-09-01','2027-09-04', false, null, null, 'Clash Case', 'booked') g$q$, '{4,7,7,3}');
+select t.eq  ('short mode returns the item that goes short',
+  $q$select g.name from public.clash_grid('2027-09-01','2027-09-04', true, null, null, 'Case', 'short') g$q$, 'Clash Case');
+select t.eq  ('booked mode leaves out the idle item',
+  $q$select count(*)::text from public.clash_grid('2027-09-01','2027-09-04', true, null, null, 'Case', 'booked') g$q$, '1');
+select t.eq  ('all mode includes the idle item',
+  $q$select count(*)::text from public.clash_grid('2027-09-01','2027-09-04', true, null, null, 'Case', 'all') g where g.name in ('Clash Case','Idle Case')$q$, '2');
+select t.eq  ('a window with no bookings is empty in booked mode',
+  $q$select count(*)::text from public.clash_grid('2027-12-01','2027-12-07', true, null, null, 'Clash Case', 'booked') g$q$, '0');
+select t.eq  ('paging reports the full count (Flight, Clash and Idle Case) with one row per page',
+  $q$select g.total_count::text from public.clash_grid('2027-09-01','2027-09-04', true, null, null, 'Case', 'all', 1, 0) g$q$, '3');
+select t.eq  ('page two returns the second item',
+  $q$select count(*)::text from public.clash_grid('2027-09-01','2027-09-04', true, null, null, 'Case', 'all', 1, 1) g$q$, '1');
+select t.eq  ('search treats percent as plain text',
+  $q$select count(*)::text from public.clash_grid('2027-09-01','2027-09-04', true, null, null, '%', 'all') g$q$, '0');
+select t.fails('more than 93 days is refused', $q$select * from public.clash_grid('2027-09-01','2028-01-31')$q$, '%93 days%');
+select t.fails('end before start is refused', $q$select * from public.clash_grid('2027-09-05','2027-09-01')$q$, '%before the start%');
+select t.fails('unknown mode is refused', $q$select * from public.clash_grid('2027-09-01','2027-09-04', true, null, null, null, 'bogus')$q$, '%Unknown mode%');
+
+-- moving kit between jobs
+select t.fails('moving more than the line has is refused',
+  $q$select public.move_line_qty((select l.id from public.job_lines l join public.jobs j on j.id=l.job_id where j.ref='ROS-C1'), (select id from public.jobs where ref='ROS-C4'), 5)$q$, '%only has 4%');
+select t.fails('moving to the same job is refused',
+  $q$select public.move_line_qty((select l.id from public.job_lines l join public.jobs j on j.id=l.job_id where j.ref='ROS-C1'), (select id from public.jobs where ref='ROS-C1'), 1)$q$, '%same job%');
+select t.fails('moving nothing is refused',
+  $q$select public.move_line_qty((select l.id from public.job_lines l join public.jobs j on j.id=l.job_id where j.ref='ROS-C1'), (select id from public.jobs where ref='ROS-C4'), 0)$q$, '%1 or more%');
+select t.fails('mandatory kit content cannot be moved',
+  $q$select public.move_line_qty((select l.id from public.job_lines l join public.jobs j on j.id=l.job_id join public.equipment_types e on e.id=l.type_id where j.ref='ROS-K' and e.name='Mic Clip'), (select id from public.jobs where ref='ROS-C4'), 1)$q$, '%mandatory%');
+select t.fails('moving to a cancelled job is refused',
+  $q$select public.move_line_qty((select l.id from public.job_lines l join public.jobs j on j.id=l.job_id where j.ref='ROS-C1'), (select id from public.jobs where ref='ROS-S4'), 1)$q$, '%cancelled%');
+select t.ok  ('move 2 from C1 to C2 (C2 already has the item)',
+  $q$select public.move_line_qty((select l.id from public.job_lines l join public.jobs j on j.id=l.job_id where j.ref='ROS-C1'), (select id from public.jobs where ref='ROS-C2'), 2)$q$);
+select t.eq  ('C1 now holds 2',
+  $q$select l.qty_required::text from public.job_lines l join public.jobs j on j.id=l.job_id join public.equipment_types e on e.id=l.type_id where j.ref='ROS-C1' and e.name='Clash Case' and l.archived_at is null$q$, '2');
+select t.eq  ('C2 merged to 5 on one line',
+  $q$select count(*)::text || ' line, qty ' || sum(l.qty_required)::text from public.job_lines l join public.jobs j on j.id=l.job_id join public.equipment_types e on e.id=l.type_id where j.ref='ROS-C2' and e.name='Clash Case' and l.archived_at is null$q$, '1 line, qty 5');
+select t.ok  ('move all of C1 to the target job',
+  $q$select public.move_line_qty((select l.id from public.job_lines l join public.jobs j on j.id=l.job_id join public.equipment_types e on e.id=l.type_id where j.ref='ROS-C1' and e.name='Clash Case' and l.archived_at is null), (select id from public.jobs where ref='ROS-C4'), 2)$q$);
+select t.eq  ('the emptied line on C1 is archived, not deleted',
+  $q$select count(*)::text from public.job_lines l join public.jobs j on j.id=l.job_id where j.ref='ROS-C1' and l.archived_at is not null$q$, '1');
+select t.eq  ('the target job has 2',
+  $q$select sum(l.qty_required)::text from public.job_lines l join public.jobs j on j.id=l.job_id where j.ref='ROS-C4' and l.archived_at is null$q$, '2');
+select t.eq  ('the grid follows the move: 5 + 1 provisional on the 2nd',
+  $q$select g.alloc::text from public.clash_grid('2027-09-01','2027-09-04', true, null, null, 'Clash Case', 'booked') g$q$, '{0,6,5,5}');
+select t.logout();
+
+select t.login('lily@x.test');
+select t.eq  ('warehouse can read the grid',
+  $q$select count(*)::text from public.clash_grid('2027-09-01','2027-09-04', true, null, null, 'Clash Case', 'booked') g$q$, '1');
+select t.fails('warehouse cannot move kit',
+  $q$select public.move_line_qty((select l.id from public.job_lines l join public.jobs j on j.id=l.job_id where j.ref='ROS-C2'), (select id from public.jobs where ref='ROS-C4'), 1)$q$, '%Only the office%');
+select t.logout();
 commit;
 
 -- ---------------------------------------------------------------------------
