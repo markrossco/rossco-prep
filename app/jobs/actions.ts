@@ -174,6 +174,70 @@ export async function addToJob(_prev: FormState, fd: FormData): Promise<FormStat
   }
 }
 
+/** Add the chosen contents of a kit to its line on the job. Each qty_<item id> field with 1 or more is added. */
+export async function addKitContents(_prev: FormState, fd: FormData): Promise<FormState> {
+  try {
+    const { supabase } = await actionDb()
+    const jobId = text(fd, 'job_id')
+    const lineId = text(fd, 'line_id')
+    if (!isUuid(jobId) || !isUuid(lineId)) return { error: 'Missing job or kit.' }
+
+    const chosen: { id: string; qty: number }[] = []
+    for (const [key, value] of fd.entries()) {
+      if (!key.startsWith('qty_')) continue
+      const id = key.slice(4)
+      const raw = String(value).trim()
+      if (!raw || !isUuid(id)) continue
+      const qty = Math.trunc(Number(raw))
+      if (!Number.isFinite(qty) || qty < 0) return { error: 'Quantities must be whole numbers, 0 or more.' }
+      if (qty > 0) chosen.push({ id, qty })
+    }
+    if (!chosen.length) return { error: 'Type a quantity next to the items you want.' }
+
+    const { data: kitLine } = await supabase
+      .from('job_lines')
+      .select('id, job_id, type_id, archived_at')
+      .eq('id', lineId)
+      .maybeSingle()
+    if (!kitLine || kitLine.job_id !== jobId || kitLine.archived_at) return { error: 'That kit is not on this job.' }
+
+    const { data: types } = await supabase
+      .from('equipment_types')
+      .select('id, name, kind, owned_qty, active, archived_at')
+      .in('id', chosen.map((c) => c.id))
+    const byId = new Map((types ?? []).map((t) => [t.id as string, t]))
+    for (const c of chosen) {
+      const t = byId.get(c.id)
+      if (!t) return { error: 'One of the items was not found.' }
+      if (t.archived_at || !t.active) return { error: `${t.name} is switched off.` }
+    }
+
+    for (const c of chosen) {
+      const t = byId.get(c.id)!
+      const source = t.kind === 'stock' && t.owned_qty === 0 ? 'sub_hire' : 'own'
+      const { data: existing } = await supabase
+        .from('job_lines')
+        .select('id, qty_required')
+        .eq('job_id', jobId)
+        .eq('parent_line_id', lineId)
+        .eq('type_id', c.id)
+        .is('archived_at', null)
+        .limit(1)
+      const res = existing?.length
+        ? await supabase.from('job_lines').update({ qty_required: existing[0].qty_required + c.qty }).eq('id', existing[0].id)
+        : await supabase
+            .from('job_lines')
+            .insert({ job_id: jobId, type_id: c.id, qty_required: c.qty, source, parent_line_id: lineId, mandatory: false })
+      if (res.error) return { error: `${t.name}: ${friendly(res.error.message)}` }
+    }
+    revalidatePath(`/jobs/${jobId}`)
+    revalidatePath('/jobs')
+    return { ok: true, message: `Added ${chosen.length === 1 ? '1 item' : `${chosen.length} items`}.` + (await shortageNote(supabase, jobId)) }
+  } catch (e) {
+    return oops(e)
+  }
+}
+
 export async function addFreeText(_prev: FormState, fd: FormData): Promise<FormState> {
   try {
     const { supabase } = await actionDb()

@@ -1,3 +1,4 @@
+import { Fragment } from 'react'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import Topbar from '@/components/topbar'
@@ -9,6 +10,7 @@ import { FINISHED, fmtDate, ORDER_STATUSES, orderStatusLabel, STATUSES, statusLa
 import JobFields from '../job-fields'
 import {
   addFreeText,
+  addKitContents,
   addToJob,
   coverShortage,
   createOrder,
@@ -53,6 +55,13 @@ type Order = {
   status: string
   notes: string | null
   supplier: { name: string } | null
+}
+type Accessory = {
+  parent_type_id: string
+  child_type_id: string
+  inclusion: string
+  qty_per_parent: number
+  child: { name: string; kind: string; owned_qty: number; active: boolean; archived_at: string | null }
 }
 type Short = {
   type_id: string
@@ -116,14 +125,74 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
 
   // Kit titles first, then their contents, in the order they were added
   const tops = lines.filter((l) => !l.parent_line_id)
-  const ordered: Line[] = []
-  for (const t of tops) {
-    ordered.push(t)
-    ordered.push(...lines.filter((c) => c.parent_line_id === t.id))
+  const childrenOf = (id: string) => lines.filter((c) => c.parent_line_id === id)
+
+  // What each kit on this job could still take: its listed contents that are not on the job yet
+  const kitTypeIds = [...new Set(tops.filter((l) => l.type?.kind === 'kit' && l.type_id).map((l) => l.type_id as string))]
+  const { data: accData } = kitTypeIds.length
+    ? await supabase
+        .from('type_accessories')
+        .select('parent_type_id, child_type_id, inclusion, qty_per_parent, sort, child:equipment_types!child_type_id(name, kind, owned_qty, active, archived_at)')
+        .in('parent_type_id', kitTypeIds)
+        .is('archived_at', null)
+        .order('sort')
+        .order('created_at')
+    : { data: [] }
+  const accessories = (accData ?? []) as unknown as Accessory[]
+  const choicesFor = (kitLine: Line) => {
+    const have = new Set(childrenOf(kitLine.id).map((c) => c.type_id))
+    const rank = { mandatory: 0, default: 1, optional: 2 } as Record<string, number>
+    return accessories
+      .filter((a) => a.parent_type_id === kitLine.type_id && !have.has(a.child_type_id) && a.child && a.child.active && !a.child.archived_at)
+      .sort((a, b) => (rank[a.inclusion] ?? 3) - (rank[b.inclusion] ?? 3) || a.child.name.localeCompare(b.child.name))
   }
-  for (const l of lines) if (l.parent_line_id && !ordered.includes(l)) ordered.push(l)
 
   const [itemNames, orgNames, venueNames] = names ?? [null, null, null]
+
+  const renderLine = (l: Line) => {
+    const isKit = l.type?.kind === 'kit'
+    const child = !!l.parent_line_id
+    const p = prog.get(l.id)
+    const short = l.source === 'own' && l.type_id ? shortByType.get(l.type_id) : undefined
+    const canEditLine = office && !finished
+    const canRemove = canEditLine && !(l.mandatory && child)
+    return (
+      <tr key={l.id}>
+        <td style={child ? { paddingLeft: 28 } : undefined}>
+          {isKit ? <strong>{l.type?.name}</strong> : l.type_id ? <Link href={`/equipment/${l.type_id}`}>{l.type?.name}</Link> : <span>{l.description}</span>}{' '}
+          {isKit && <span className="badge">kit</span>}
+          {l.type?.kind === 'consumable' && <span className="badge">consumable</span>}
+          {!l.type_id && <span className="badge">other</span>}
+          {l.mandatory && child && <span className="badge" title="Always included with the kit">always included</span>}
+          {l.added_late && <span className="badge warn" title="Added after prep started">late</span>}
+          {short && <span className="badge warn" title={`Short by ${short.short_by} on ${fmtDate(short.worst_day)}`}>short by {short.short_by}</span>}
+        </td>
+        <td className="muted">
+          {l.source === 'own' ? 'Own stock' : `Sub-hire${l.sub_hire_id ? `: ${orderName.get(l.sub_hire_id) ?? ''}` : ': no order yet'}`}
+        </td>
+        <td className="num">
+          {canEditLine ? (
+            <ActionForm action={updateLineQty} submit="Save" small secondary inline>
+              <input type="hidden" name="id" value={l.id} />
+              <input type="hidden" name="job_id" value={job.id} />
+              <input name="qty" inputMode="numeric" defaultValue={l.qty_required} aria-label="Quantity required" style={{ width: 70 }} />
+            </ActionForm>
+          ) : (
+            l.qty_required
+          )}
+        </td>
+        <td className="num">{isKit ? '-' : `${p?.prepped_qty ?? 0} / ${l.qty_required}`}</td>
+        <td>
+          {canRemove && (
+            <ActionForm action={removeLine} submit="Remove" small secondary inline>
+              <input type="hidden" name="id" value={l.id} />
+              <input type="hidden" name="job_id" value={job.id} />
+            </ActionForm>
+          )}
+        </td>
+      </tr>
+    )
+  }
 
   return (
     <>
@@ -237,51 +306,59 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
               </tr>
             </thead>
             <tbody>
-              {ordered.map((l) => {
-                const isKit = l.type?.kind === 'kit'
-                const child = !!l.parent_line_id
-                const p = prog.get(l.id)
-                const short = l.source === 'own' && l.type_id ? shortByType.get(l.type_id) : undefined
-                const canEditLine = office && !finished
-                const canRemove = canEditLine && !(l.mandatory && child)
+              {tops.map((t) => {
+                const choices = t.type?.kind === 'kit' && office && !finished ? choicesFor(t) : []
+                const kids = childrenOf(t.id)
                 return (
-                  <tr key={l.id}>
-                    <td style={child ? { paddingLeft: 28 } : undefined}>
-                      {isKit ? <strong>{l.type?.name}</strong> : l.type_id ? <Link href={`/equipment/${l.type_id}`}>{l.type?.name}</Link> : <span>{l.description}</span>}{' '}
-                      {isKit && <span className="badge">kit</span>}
-                      {l.type?.kind === 'consumable' && <span className="badge">consumable</span>}
-                      {!l.type_id && <span className="badge">other</span>}
-                      {l.mandatory && child && <span className="badge" title="Always included with the kit">always included</span>}
-                      {l.added_late && <span className="badge warn" title="Added after prep started">late</span>}
-                      {short && <span className="badge warn" title={`Short by ${short.short_by} on ${fmtDate(short.worst_day)}`}>short by {short.short_by}</span>}
-                    </td>
-                    <td className="muted">
-                      {l.source === 'own' ? 'Own stock' : `Sub-hire${l.sub_hire_id ? `: ${orderName.get(l.sub_hire_id) ?? ''}` : ': no order yet'}`}
-                    </td>
-                    <td className="num">
-                      {canEditLine ? (
-                        <ActionForm action={updateLineQty} submit="Save" small secondary inline>
-                          <input type="hidden" name="id" value={l.id} />
-                          <input type="hidden" name="job_id" value={job.id} />
-                          <input name="qty" inputMode="numeric" defaultValue={l.qty_required} aria-label="Quantity required" style={{ width: 70 }} />
-                        </ActionForm>
-                      ) : (
-                        l.qty_required
-                      )}
-                    </td>
-                    <td className="num">{isKit ? '-' : `${p?.prepped_qty ?? 0} / ${l.qty_required}`}</td>
-                    <td>
-                      {canRemove && (
-                        <ActionForm action={removeLine} submit="Remove" small secondary inline>
-                          <input type="hidden" name="id" value={l.id} />
-                          <input type="hidden" name="job_id" value={job.id} />
-                        </ActionForm>
-                      )}
-                    </td>
-                  </tr>
+                  <Fragment key={t.id}>
+                    {renderLine(t)}
+                    {kids.map(renderLine)}
+                    {choices.length > 0 && (
+                      <tr>
+                        <td colSpan={5} style={{ paddingLeft: 28 }}>
+                          <details open={kids.length === 0}>
+                            <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                              Choose contents for {t.type?.name} ({choices.length} available)
+                            </summary>
+                            <div style={{ marginTop: 10 }}>
+                              <ActionForm action={addKitContents} submit="Add the ones I have chosen" small>
+                                <input type="hidden" name="job_id" value={job.id} />
+                                <input type="hidden" name="line_id" value={t.id} />
+                                <div className="table-wrap">
+                                  <table>
+                                    <thead><tr><th>Item</th><th></th><th className="num">Owned</th><th className="num">Quantity</th></tr></thead>
+                                    <tbody>
+                                      {choices.map((a) => (
+                                        <tr key={a.child_type_id}>
+                                          <td>{a.child.name}</td>
+                                          <td className="muted">
+                                            {a.inclusion === 'optional' ? 'Optional' : 'Normally included'}
+                                          </td>
+                                          <td className="num">{a.child.kind === 'stock' ? a.child.owned_qty : '-'}</td>
+                                          <td className="num">
+                                            <input
+                                              name={`qty_${a.child_type_id}`}
+                                              inputMode="numeric"
+                                              placeholder="0"
+                                              aria-label={`Quantity of ${a.child.name}`}
+                                              style={{ width: 70 }}
+                                            />
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </ActionForm>
+                            </div>
+                          </details>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               })}
-              {ordered.length === 0 && <tr><td colSpan={5} className="muted">Nothing on the list yet.</td></tr>}
+              {tops.length === 0 && <tr><td colSpan={5} className="muted">Nothing on the list yet.</td></tr>}
             </tbody>
           </table>
         </div>
